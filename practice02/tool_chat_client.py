@@ -6,7 +6,6 @@ import urllib.request
 import urllib.error
 
 # 工具函数
-
 def list_files(directory):
     """列出某个目录下有哪些文件（包括文件的基本属性、大小等信息）"""
     try:
