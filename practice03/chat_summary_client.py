@@ -283,10 +283,13 @@ def load_env():
                     env_vars[key.strip()] = value.strip()
     return env_vars
 
-def call_llm_with_tools(prompt):
-    """调用LLM并处理工具调用"""
-    # 加载环境变量
-    env_vars = load_env()
+def calculate_tokens(text):
+    """简单估算文本的token数量"""
+    # 粗略估算：1个token约等于4个字符
+    return len(text) // 4
+
+def summarize_chat_history(chat_history, env_vars):
+    """总结聊天历史记录"""
     base_url = env_vars.get('BASE_URL', 'https://api.openai.com/v1')
     model = env_vars.get('MODEL', 'gpt-3.5-turbo')
     api_key = env_vars.get('API_KEY', '')
@@ -295,7 +298,135 @@ def call_llm_with_tools(prompt):
     
     if not api_key:
         print("错误：API_KEY未设置")
-        return
+        return chat_history
+    
+    # 提取主机和路径
+    if base_url.startswith('https://'):
+        host = base_url[8:].split('/')[0]
+        path_parts = base_url[8:].split('/')[1:]
+        if path_parts:
+            path = '/' + '/'.join(path_parts) + '/chat/completions'
+        else:
+            path = '/chat/completions'
+        conn = http.client.HTTPSConnection(host)
+    else:
+        host = base_url[7:].split('/')[0]
+        path_parts = base_url[7:].split('/')[1:]
+        if path_parts:
+            path = '/' + '/'.join(path_parts) + '/chat/completions'
+        else:
+            path = '/chat/completions'
+        conn = http.client.HTTPConnection(host)
+    
+    # 构建总结提示词
+    summary_prompt = """请对以下聊天历史进行简要总结，提取关键信息和主题：
+
+{chat_history}
+
+总结要求：
+1. 简洁明了，抓住核心内容
+2. 保留重要的信息点
+3. 忽略无关细节
+4. 使用列表格式呈现主要内容"""
+    
+    # 构建聊天历史文本
+    chat_history_text = ""
+    for msg in chat_history:
+        if msg.get('content'):
+            if msg['role'] == 'user':
+                chat_history_text += f"用户: {msg['content']}\n"
+            elif msg['role'] == 'assistant':
+                chat_history_text += f"助手: {msg['content']}\n"
+    
+    # 构建请求数据
+    messages = [
+        {"role": "system", "content": "你是一个专业的聊天记录总结助手，擅长提取关键信息并进行简洁总结。"},
+        {"role": "user", "content": summary_prompt.format(chat_history=chat_history_text)}
+    ]
+    
+    data = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens
+    }
+    
+    # 构建请求头
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {api_key}'
+    }
+    
+    # 发送请求
+    try:
+        conn.request('POST', path, json.dumps(data), headers)
+        response = conn.getresponse()
+        response_data = response.read().decode('utf-8')
+        conn.close()
+        
+        result = json.loads(response_data)
+        if 'error' in result:
+            print(f"总结错误：{result['error']['message']}")
+            return chat_history
+        
+        summary = result['choices'][0]['message']['content']
+        
+        # 构建新的聊天历史
+        new_chat_history = [
+            {"role": "system", "content": f"聊天历史总结：\n{summary}"}
+        ]
+        
+        # 保留最后30%的聊天记录
+        total_messages = len(chat_history)
+        if total_messages > 0:
+            keep_count = max(1, int(total_messages * 0.3))
+            new_chat_history.extend(chat_history[-keep_count:])
+        
+        return new_chat_history
+        
+    except Exception as e:
+        print(f"总结失败：{str(e)}")
+        return chat_history
+
+def call_llm_with_tools(prompt, chat_history=None):
+    """调用LLM并处理工具调用，支持聊天历史管理"""
+    # 加载环境变量
+    env_vars = load_env()
+    base_url = env_vars.get('BASE_URL', 'https://api.openai.com/v1')
+    model = env_vars.get('MODEL', 'gpt-3.5-turbo')
+    api_key = env_vars.get('API_KEY', '')
+    temperature = float(env_vars.get('TEMPERATURE', '0.7'))
+    max_tokens = int(env_vars.get('MAX_TOKENS', '4000'))
+    
+    if not api_key:
+        print("错误：API_KEY未设置")
+        return chat_history
+    
+    # 初始化聊天历史
+    if chat_history is None:
+        chat_history = []
+    
+    # 添加用户消息
+    chat_history.append({"role": "user", "content": prompt})
+    
+    # 检查是否需要总结聊天历史
+    # 条件1：聊天轮数超过5轮
+    # 条件2：聊天上下文长度超过3k tokens
+    user_message_count = sum(1 for msg in chat_history if msg['role'] == 'user')
+    
+    # 计算上下文长度
+    context_text = ""
+    for msg in chat_history:
+        if msg.get('content'):
+            context_text += msg['content'] + "\n"
+    context_tokens = calculate_tokens(context_text)
+    
+    if user_message_count > 5 or context_tokens > 3000:
+        print("\n=== 检测到聊天历史过长，开始总结 ===")
+        print(f"当前聊天轮数: {user_message_count}")
+        print(f"当前上下文长度: {context_tokens} tokens")
+        chat_history = summarize_chat_history(chat_history, env_vars)
+        print("=== 聊天历史总结完成 ===\n")
     
     # 提取主机和路径
     if base_url.startswith('https://'):
@@ -357,9 +488,9 @@ def call_llm_with_tools(prompt):
     
     # 构建请求数据
     messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt}
+        {"role": "system", "content": system_prompt}
     ]
+    messages.extend(chat_history)
     
     data = {
         "model": model,
@@ -393,7 +524,7 @@ def call_llm_with_tools(prompt):
         result = json.loads(response_data)
         if 'error' in result:
             print(f"错误：{result['error']['message']}")
-            return
+            return chat_history
         
         # 提取token使用情况
         usage = result.get('usage', {})
@@ -448,6 +579,12 @@ def call_llm_with_tools(prompt):
                         "content": json.dumps(result)
                     })
                 
+                # 添加助手消息（工具调用）
+                chat_history.append(choice['message'])
+                
+                # 添加工具响应
+                chat_history.extend(tool_responses)
+                
                 # 再次调用LLM，传入工具执行结果
                 messages.extend(tool_responses)
                 data['messages'] = messages
@@ -467,7 +604,7 @@ def call_llm_with_tools(prompt):
                 result2 = json.loads(response_data2)
                 if 'error' in result2:
                     print(f"错误：{result2['error']['message']}")
-                    return
+                    return chat_history
                 
                 # 提取第二次token使用情况
                 usage2 = result2.get('usage', {})
@@ -481,6 +618,9 @@ def call_llm_with_tools(prompt):
                 print(f"速度: {total_tokens2 / elapsed_time2:.2f} tokens/秒")
                 print("\n响应内容:")
                 print(result2['choices'][0]['message']['content'])
+                
+                # 添加助手最终响应
+                chat_history.append(result2['choices'][0]['message'])
         else:
             # 直接打印结果
             print("\n=== LLM调用结果 ===")
@@ -491,29 +631,45 @@ def call_llm_with_tools(prompt):
             print(f"速度: {tokens_per_second:.2f} tokens/秒")
             print("\n响应内容:")
             print(choice['message']['content'])
+            
+            # 添加助手响应
+            chat_history.append(choice['message'])
         
     except json.JSONDecodeError:
         print("错误：响应解析失败")
         print(f"原始响应: {response_data}")
     except Exception as e:
         print(f"错误：{str(e)}")
+    
+    return chat_history
 
 if __name__ == "__main__":
-    print("=== 工具调用示例 ===")
-   # print("示例1: 列出当前目录下的文件")
-    #call_llm_with_tools("请列出当前目录下的文件")
+    print("=== 聊天记录总结示例 ===")
     
-    #print("\n示例2: 创建一个测试文件")
-    #call_llm_with_tools("请在当前目录下创建一个名为test.txt的文件，内容为'Hello, World!'")
+    # 初始化聊天历史
+    chat_history = []
     
-    #print("\n示例3: 读取刚才创建的文件")
-    #call_llm_with_tools("请读取当前目录下的test.txt文件内容")
+    # 模拟多轮对话
+    print("\n=== 第1轮对话 ===")
+    chat_history = call_llm_with_tools("你好，我想了解一下天气情况", chat_history)
     
-    #print("\n示例4: 重命名文件")
-    #call_llm_with_tools("请将当前目录下的test.txt重命名为example.txt")
+    print("\n=== 第2轮对话 ===")
+    chat_history = call_llm_with_tools("请帮我查询北京今天的天气", chat_history)
     
-    #print("\n示例5: 删除文件")
-    #call_llm_with_tools("请删除当前目录下的example.txt文件")
+    print("\n=== 第3轮对话 ===")
+    chat_history = call_llm_with_tools("那上海呢？", chat_history)
     
-    print("\n示例6: 访问网页")
-    call_llm_with_tools("请访问百度首页并返回内容")
+    print("\n=== 第4轮对话 ===")
+    chat_history = call_llm_with_tools("广州的天气怎么样？", chat_history)
+    
+    print("\n=== 第5轮对话 ===")
+    chat_history = call_llm_with_tools("深圳的天气如何？", chat_history)
+    
+    print("\n=== 第6轮对话（应该触发总结） ===")
+    chat_history = call_llm_with_tools("杭州的天气怎么样？", chat_history)
+    
+    print("\n=== 第7轮对话 ===")
+    chat_history = call_llm_with_tools("成都的天气如何？", chat_history)
+    
+    print("\n=== 对话结束 ===")
+    print(f"最终聊天历史长度: {len(chat_history)} 条消息")
