@@ -33,11 +33,16 @@ project/
 
 - **tool_chat_client.py**: 包含与tool_client.py相同的功能，是完整的工具调用客户端
 
-### practice03 - 聊天记录总结示例
+### practice03 - 聊天记录管理示例
 - **chat_summary_client.py**: 实现了聊天记录自动总结功能
   - 聊天历史检测：当聊天轮数超过5轮或上下文长度超过3k tokens时触发总结
   - 聊天记录压缩：对前70%的内容进行总结压缩，保留最后30%的原文
   - 自动调用LLM进行总结，保持对话的连贯性
+
+- **chat_analyzer_client.py**: 实现了聊天分析和历史管理功能
+  - 关键信息提取：每5次聊天自动提取关键信息，按照5W规则（Who、What、When、Where、Why）提取
+  - 历史记录存储：将提取的关键信息存储到D:\AI\chat-log\log.txt文件中，支持增量更新
+  - 聊天历史搜索：通过/search命令或表达"查找聊天历史"的意思来搜索历史记录
 
 ## 环境配置
 
@@ -62,6 +67,9 @@ python practice02/tool_chat_client.py
 
 # 运行chat_summary_client.py示例
 python practice03/chat_summary_client.py
+
+# 运行chat_analyzer_client.py示例
+python practice03/chat_analyzer_client.py
 ```
 
 ### 工具调用示例
